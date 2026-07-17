@@ -20,6 +20,14 @@ groups:
       - record: shepherd:model_price:usd_per_mtok
         expr: label_replace(label_replace(vector(3.75), "model", "claude-sonnet-4-6", "", ""), "type", "cacheCreation", "", "")
       - record: shepherd:model_price:usd_per_mtok
+        expr: label_replace(label_replace(vector(3.00), "model", "claude-sonnet-5", "", ""), "type", "input", "", "")
+      - record: shepherd:model_price:usd_per_mtok
+        expr: label_replace(label_replace(vector(15.00), "model", "claude-sonnet-5", "", ""), "type", "output", "", "")
+      - record: shepherd:model_price:usd_per_mtok
+        expr: label_replace(label_replace(vector(0.30), "model", "claude-sonnet-5", "", ""), "type", "cacheRead", "", "")
+      - record: shepherd:model_price:usd_per_mtok
+        expr: label_replace(label_replace(vector(3.75), "model", "claude-sonnet-5", "", ""), "type", "cacheCreation", "", "")
+      - record: shepherd:model_price:usd_per_mtok
         expr: label_replace(label_replace(vector(5.00), "model", "claude-opus-4-7", "", ""), "type", "input", "", "")
       - record: shepherd:model_price:usd_per_mtok
         expr: label_replace(label_replace(vector(25.00), "model", "claude-opus-4-7", "", ""), "type", "output", "", "")

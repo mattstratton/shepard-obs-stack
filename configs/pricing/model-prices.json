@@ -1,8 +1,9 @@
 {
-  "_comment": "USD per 1M tokens. input/output from org Model Selection Guide (2026-07-17). cacheRead=0.1x input and cacheCreation=1.25x input are standard-multiplier best-effort assumptions (exact enterprise cache rates unavailable; accepted). The 'model' value must EXACTLY match the model label observed in Prometheus: check label_values(shepherd_session_tokens_total, model) and add one entry per observed ID (dated IDs like claude-haiku-4-5-20251001 need their own entries).",
+  "_comment": "USD per 1M tokens. input/output from org Model Selection Guide (2026-07-17), except claude-sonnet-5 (added later, not yet in the guide — priced from the claude-api skill's standard list rate, same as claude-sonnet-4-6; a temporary $2/$10 introductory rate applies through 2026-08-31 on public API but is assumed not to apply to the enterprise agreement, so the standard rate is used to avoid a silent cliff on that date). cacheRead=0.1x input and cacheCreation=1.25x input are standard-multiplier best-effort assumptions (exact enterprise cache rates unavailable; accepted). The 'model' value must EXACTLY match the model label observed in Prometheus: check label_values(shepherd_session_tokens_total, model) and add one entry per observed ID (dated IDs like claude-haiku-4-5-20251001 need their own entries).",
   "prices": [
     {"model": "claude-haiku-4-5-20251001", "input": 1.00,  "output": 5.00,  "cacheRead": 0.10, "cacheCreation": 1.25},
     {"model": "claude-sonnet-4-6",         "input": 3.00,  "output": 15.00, "cacheRead": 0.30, "cacheCreation": 3.75},
+    {"model": "claude-sonnet-5",           "input": 3.00,  "output": 15.00, "cacheRead": 0.30, "cacheCreation": 3.75},
     {"model": "claude-opus-4-7",           "input": 5.00,  "output": 25.00, "cacheRead": 0.50, "cacheCreation": 6.25},
     {"model": "claude-opus-4-8",           "input": 5.00,  "output": 25.00, "cacheRead": 0.50, "cacheCreation": 6.25},
     {"model": "claude-fable-5",            "input": 10.00, "output": 50.00, "cacheRead": 1.00, "cacheCreation": 12.50}
