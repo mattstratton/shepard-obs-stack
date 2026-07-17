@@ -402,14 +402,14 @@ Span_id offset: 40016+. Compaction summaries (`isCompactSummary`) are not counte
 ## Testing
 
 ```bash
-bash tests/run-all.sh         # 159 unit tests (syntax, configs, hooks, parsers)
+bash tests/run-all.sh         # 170 unit tests (syntax, configs, hooks, parsers)
 bash tests/run-all.sh --e2e   # + Docker E2E smoke (starts stack, runs test-signal.sh)
 ```
 
 4 test suites:
 - **test-shell-syntax.sh** — `bash -n` on all 25 scripts + shellcheck (if installed)
 - **test-config-validate.sh** — 11 JSON files (10 dashboards + pricing table, jq) + 13 YAML configs (PyYAML/yq) + promtool check rules (if installed) + a pricing section (rate-card structure + generator-sync diff) + 7 alert regression tests (rule counts + expression guards)
-- **test-hooks.sh** — 55 behavioral tests with mock curl/git. Covers all hooks (Claude, Gemini, Codex) + install/uninstall + the Claude Stop hook's per-session state/delta path (fresh session, repeat firing, corrupt state, lock contention, state cleanup). Uses `SHEPARD_TEST_MODE=1` to bypass Rust accelerator and test bash code path.
+- **test-hooks.sh** — 66 behavioral tests with mock curl/git. Covers all hooks (Claude, Gemini, Codex) + install/uninstall (including the array-preserving merge regression) + the Claude Stop hook's per-session state/delta path (fresh session, repeat firing, corrupt state, lock contention, state cleanup) + the dot-in-cwd session-lookup regression. Uses `SHEPARD_TEST_MODE=1` to bypass Rust accelerator and test bash code path.
 - **test-parsers.sh** — 58 tests against fixtures in `tests/fixtures/`. Verifies span count, required fields, attributes, error status, trace_id consistency, context breakdown, per-turn spans, and the metrics sidecar (per-model tokens, skill/slash-command attribution, subagents, MCP).
 
 CI: `.github/workflows/test.yml` runs unit tests on every push/PR, then E2E smoke with Docker Compose. CI installs promtool for Prometheus rule validation.

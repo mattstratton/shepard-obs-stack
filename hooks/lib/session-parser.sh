@@ -54,15 +54,6 @@ def parts_to_ns: "\(.s)\(.ns | pad9)";
 # ISO 8601 → nanosecond string
 def ts_to_ns: ts_parts | parts_to_ns;
 
-# Subtract milliseconds from {s, ns} timestamp parts
-def subtract_ms($ms):
-  (($ms / 1000) | floor) as $s_off |
-  (($ms % 1000) * 1000000 | floor) as $ns_off |
-  (.ns - $ns_off) as $new_ns |
-  if $new_ns >= 0 then {s: (.s - $s_off), ns: $new_ns}
-  else {s: (.s - $s_off - 1), ns: ($new_ns + 1000000000)}
-  end;
-
 # Truncate string to max length
 def trunc($n): if length > $n then .[:$n] + "…" else . end;
 
@@ -214,12 +205,15 @@ if $session_id == null then empty else
   select(. == "human")
 ] | length) as $turn_count |
 
-# MCP completed entries
-[$all[] | select(
-  .type == "progress" and
-  .data.type == "mcp_progress" and
-  .data.status == "completed"
-)] as $mcps |
+# MCP tool calls. Derived from tool_use entries named "mcp__<server>__<tool>" (the only place
+# MCP calls actually appear in the Claude Code JSONL) — a data.type=="mcp_progress" progress
+# entry was never observed in any real session log, so the previous progress-lookup here
+# silently matched nothing and both the mcp span and the mcp_calls sidecar metric were always
+# empty.
+[$tools[] | select(.name | startswith("mcp__")) |
+  (.name | sub("^mcp__"; "") | capture("^(?<server>.+?)__(?<tool>.+)$")) as $st |
+  {ts: .ts, id: .id, server: $st.server, tool: $st.tool}
+] as $mcps |
 
 # Agent progress grouped by agentId
 ([$all[] | select(
@@ -297,8 +291,7 @@ if $session_id == null then empty else
 ([$tools[] | select(.subagent != "") | .subagent]
  | group_by(.) | map({subagent_type: .[0], count: length})) as $subagent_counts |
 
-($mcps | map({server: (.data.serverName // "unknown"), tool: (.data.toolName // "unknown")})
- | group_by("\(.server)|\(.tool)")
+($mcps | group_by("\(.server)|\(.tool)")
  | map({server: .[0].server, tool: .[0].tool, count: length})) as $mcp_counts |
 
 # ===== Emit spans =====
@@ -359,19 +352,16 @@ if $session_id == null then empty else
      (if $t.subagent != "" then {"agent.type": $t.subagent} else {} end)
    )}),
 
-# 3. MCP call spans (span_id offset: 10016)
+# 3. MCP call spans (span_id offset: 10016) — semantic duplicate of the generic
+# claude.tool.mcp__* span (offset 16) with mcp.server/mcp.tool split into attributes.
 ($mcps | to_entries[] |
   (.key + 10016) as $i | .value as $m |
-  ($m.data.elapsedTimeMs // 0) as $elapsed |
-  ($m.data.serverName // "unknown") as $srv |
-  ($m.data.toolName // "unknown") as $tool |
-  ($m.timestamp | ts_parts) as $ep |
-  ($ep | subtract_ms($elapsed)) as $sp |
+  ($results[$m.id] // {ts: $m.ts, err: false}) as $r |
   {trace_id: $trace_id, span_id: ($i | pad16), parent_span_id: $root_sid,
-   name: "claude.mcp.\($srv).\($tool)",
-   start_ns: ($sp | parts_to_ns), end_ns: ($ep | parts_to_ns),
-   status: 0,
-   attributes: {"mcp.server": $srv, "mcp.tool": $tool, "mcp.duration_ms": ($elapsed | tostring)}}),
+   name: "claude.mcp.\($m.server).\($m.tool)",
+   start_ns: ($m.ts | ts_to_ns), end_ns: ($r.ts | ts_to_ns),
+   status: (if $r.err then 2 else 0 end),
+   attributes: {"mcp.server": $m.server, "mcp.tool": $m.tool}}),
 
 # 4. Sub-agent spans (span_id offset: 20016)
 ($agents[] |

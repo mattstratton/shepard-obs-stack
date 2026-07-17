@@ -140,9 +140,9 @@ echo "Claude session parser — skills/subagents/MCP sidecar"
 #   (/obs-cost slash command + the Skill call) -> split evenly by 2 -> 100/500/20000/300 each.
 # Turn 2: plain opener (no command), one assistant (model claude-haiku-4-5-20251001, usage
 #   input:300 output:800 cacheRead:5000 cacheCreation:200) that calls Task(subagent_type:
-#   code-reviewer). No skill/slash invocations in this turn -> contributes nothing to skill
-#   attribution.
-# One mcp_progress entry: server=tiger, tool=db_execute_query.
+#   code-reviewer). Also calls mcp__tiger__db_execute_query (zero usage, empty tool_result so
+#   it doesn't perturb token/char assertions) -> mcp = [{tiger, db_execute_query, count:1}].
+#   No skill/slash invocations in this turn -> contributes nothing to skill attribution.
 # No compaction entries. context.tool_output_chars = 64 (27 + 37), context.user_prompt_chars =
 # 64 (38 + 26) -- verified independently with `wc -c` on the fixture's literal strings.
 
