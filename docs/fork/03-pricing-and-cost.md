@@ -28,11 +28,13 @@ USD per **1 million tokens**. Rates below are the real org rates from the intern
 "Claude Model Selection Guide" (Google Drive doc `1Sl0XMlg4U6AYYS16DloC9epgvE10KlGryouwyMmDHG8`,
 pulled 2026-07-17). The guide lists **input/output only**; `cacheRead`/`cacheCreation` are
 seeded with the standard Anthropic multipliers (cacheRead = 0.1 × input, cacheCreation(5m) =
-1.25 × input) and are **UNVERIFIED** — Matt to confirm against the enterprise agreement.
+1.25 × input). These are **accepted best-effort assumptions** — Matt cannot verify exact cache
+rates in the enterprise agreement, so do NOT block on confirming them. The Native Estimate
+sanity panel (spec 04) is the guardrail: large sustained drift there is the signal to revisit.
 
 ```json
 {
-  "_comment": "USD per 1M tokens. input/output from org Model Selection Guide (2026-07-17). cacheRead=0.1x input and cacheCreation=1.25x input are STANDARD-MULTIPLIER ASSUMPTIONS - verify against enterprise agreement. The 'model' value must EXACTLY match the model label observed in Prometheus: check label_values(shepherd_session_tokens_total, model) and add one entry per observed ID (dated IDs like claude-haiku-4-5-20251001 need their own entries).",
+  "_comment": "USD per 1M tokens. input/output from org Model Selection Guide (2026-07-17). cacheRead=0.1x input and cacheCreation=1.25x input are standard-multiplier best-effort assumptions (exact enterprise cache rates unavailable; accepted). The 'model' value must EXACTLY match the model label observed in Prometheus: check label_values(shepherd_session_tokens_total, model) and add one entry per observed ID (dated IDs like claude-haiku-4-5-20251001 need their own entries).",
   "prices": [
     {"model": "claude-haiku-4-5-20251001", "input": 1.00,  "output": 5.00,  "cacheRead": 0.10, "cacheCreation": 1.25},
     {"model": "claude-sonnet-4-6",         "input": 3.00,  "output": 15.00, "cacheRead": 0.30, "cacheCreation": 3.75},

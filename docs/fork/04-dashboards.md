@@ -53,7 +53,8 @@ metrics") stays true and stays.
 - **"Cache Savings ($)"** (stat + optional timeseries):
   `sum(increase(shepherd:claude:cache_savings_usd{git_repo=~"$git_repo"}[$__range]))`
   Description: "What prompt caching saved vs. billing cache reads at the full input rate.
-  Cache rates in the pricing file are assumptions until verified."
+  Cache rates in the pricing file are standard-multiplier estimates (exact enterprise cache
+  rates unavailable) — treat as directional."
 - **"Model Mix Over Time"** (timeseries, stacked percent):
   `sum by (model) (increase(shepherd_session_tokens_total{git_repo=~"$git_repo"}[$__interval]))`
   Description: "Share of total token volume by model — spots premium-model burn on grunt work."
