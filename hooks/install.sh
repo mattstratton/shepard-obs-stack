@@ -39,43 +39,6 @@ install_claude() {
   local existing='{}'
   [[ -f "$config_file" ]] && existing="$(cat "$config_file")"
 
-  # Merge hooks into existing config
-  local hook_config
-  hook_config=$(jq -n \
-    --arg pre_tool "${HOOKS_DIR}/claude/pre-tool-use.sh" \
-    --arg post_tool "${HOOKS_DIR}/claude/post-tool-use.sh" \
-    --arg session_start "${HOOKS_DIR}/claude/session-start.sh" \
-    --arg stop "${HOOKS_DIR}/claude/stop.sh" \
-    '{
-      hooks: {
-        PreToolUse: [{
-          hooks: [{
-            type: "command",
-            command: $pre_tool
-          }]
-        }],
-        PostToolUse: [{
-          hooks: [{
-            type: "command",
-            command: $post_tool
-          }]
-        }],
-        SessionStart: [{
-          matcher: "compact",
-          hooks: [{
-            type: "command",
-            command: $session_start
-          }]
-        }],
-        Stop: [{
-          hooks: [{
-            type: "command",
-            command: $stop
-          }]
-        }]
-      }
-    }')
-
   # Native OTel: env vars scoped to Claude Code via settings.json "env" block
   local otel_env
   otel_env=$(jq -n '{
@@ -91,8 +54,33 @@ install_claude() {
     }
   }')
 
-  # Deep merge: existing config + hooks + native OTel env
-  echo "$existing" | jq --argjson hooks "$hook_config" --argjson otel "$otel_env" '. * $hooks * $otel' > "$config_file"
+  # Merge: a plain `. * $hooks` deep-merge REPLACES whole hook-event arrays, silently
+  # dropping any other tool's hooks on the same event (e.g. rtk, personal moshi-hook
+  # entries) — this bit us for real once. Instead, for each event, keep every existing
+  # entry that ISN'T a shepherd-managed one (identified by the hook script's path suffix,
+  # independent of which directory it lives in — this is what makes re-install idempotent
+  # without duplicating entries) and append this install's entry.
+  echo "$existing" | jq \
+    --arg pre_tool "${HOOKS_DIR}/claude/pre-tool-use.sh" \
+    --arg post_tool "${HOOKS_DIR}/claude/post-tool-use.sh" \
+    --arg session_start "${HOOKS_DIR}/claude/session-start.sh" \
+    --arg stop "${HOOKS_DIR}/claude/stop.sh" \
+    --argjson otel "$otel_env" \
+    '
+    def is_shepherd($re): ([.hooks[]?.command // ""] | any(test($re)));
+    def merge_event($existing; $re; $entry):
+      ([($existing // [])[] | select(is_shepherd($re) | not)]) + [$entry];
+
+    .hooks.PreToolUse = merge_event(.hooks.PreToolUse; "/hooks/claude/pre-tool-use\\.sh$";
+      {hooks: [{type: "command", command: $pre_tool}]}) |
+    .hooks.PostToolUse = merge_event(.hooks.PostToolUse; "/hooks/claude/post-tool-use\\.sh$";
+      {hooks: [{type: "command", command: $post_tool}]}) |
+    .hooks.SessionStart = merge_event(.hooks.SessionStart; "/hooks/claude/session-start\\.sh$";
+      {matcher: "compact", hooks: [{type: "command", command: $session_start}]}) |
+    .hooks.Stop = merge_event(.hooks.Stop; "/hooks/claude/stop\\.sh$";
+      {hooks: [{type: "command", command: $stop}]}) |
+    . * $otel
+    ' > "$config_file"
 
   green "Claude Code  — hooks + native OTel installed → $config_file"
 
@@ -212,33 +200,6 @@ install_gemini() {
   local existing='{}'
   [[ -f "$config_file" ]] && existing="$(cat "$config_file")"
 
-  local hook_config
-  hook_config=$(jq -n \
-    --arg after_tool "bash ${HOOKS_DIR}/gemini/after-tool.sh" \
-    --arg after_agent "bash ${HOOKS_DIR}/gemini/after-agent.sh" \
-    --arg after_model "bash ${HOOKS_DIR}/gemini/after-model.sh" \
-    --arg session_end "bash ${HOOKS_DIR}/gemini/session-end.sh" \
-    '{
-      hooks: {
-        AfterTool: [{
-          matcher: "*",
-          hooks: [{ type: "command", command: $after_tool }]
-        }],
-        AfterAgent: [{
-          matcher: "*",
-          hooks: [{ type: "command", command: $after_agent }]
-        }],
-        AfterModel: [{
-          matcher: "*",
-          hooks: [{ type: "command", command: $after_model }]
-        }],
-        SessionEnd: [{
-          matcher: "exit",
-          hooks: [{ type: "command", command: $session_end }]
-        }]
-      }
-    }')
-
   # Merge hooks + native OTel telemetry config
   local telemetry_config
   telemetry_config=$(jq -n '{
@@ -250,7 +211,28 @@ install_gemini() {
     }
   }')
 
-  echo "$existing" | jq --argjson hooks "$hook_config" --argjson telem "$telemetry_config" '. * $hooks * $telem' > "$config_file"
+  # Same array-preserving merge as install_claude — see its comment for why.
+  echo "$existing" | jq \
+    --arg after_tool "bash ${HOOKS_DIR}/gemini/after-tool.sh" \
+    --arg after_agent "bash ${HOOKS_DIR}/gemini/after-agent.sh" \
+    --arg after_model "bash ${HOOKS_DIR}/gemini/after-model.sh" \
+    --arg session_end "bash ${HOOKS_DIR}/gemini/session-end.sh" \
+    --argjson telem "$telemetry_config" \
+    '
+    def is_shepherd($re): ([.hooks[]?.command // ""] | any(test($re)));
+    def merge_event($existing; $re; $entry):
+      ([($existing // [])[] | select(is_shepherd($re) | not)]) + [$entry];
+
+    .hooks.AfterTool = merge_event(.hooks.AfterTool; "/hooks/gemini/after-tool\\.sh$";
+      {matcher: "*", hooks: [{type: "command", command: $after_tool}]}) |
+    .hooks.AfterAgent = merge_event(.hooks.AfterAgent; "/hooks/gemini/after-agent\\.sh$";
+      {matcher: "*", hooks: [{type: "command", command: $after_agent}]}) |
+    .hooks.AfterModel = merge_event(.hooks.AfterModel; "/hooks/gemini/after-model\\.sh$";
+      {matcher: "*", hooks: [{type: "command", command: $after_model}]}) |
+    .hooks.SessionEnd = merge_event(.hooks.SessionEnd; "/hooks/gemini/session-end\\.sh$";
+      {matcher: "exit", hooks: [{type: "command", command: $session_end}]}) |
+    . * $telem
+    ' > "$config_file"
 
   green "Gemini CLI   — hooks + native OTel installed → $config_file"
   INSTALLED=$((INSTALLED + 1))

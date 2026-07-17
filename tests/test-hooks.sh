@@ -291,6 +291,7 @@ fi
 
 # 2. Immediate second stop, unchanged JSONL → no NEW datapoints (session_end + trace excepted)
 before_mtime=$(file_mtime "$state_file")
+sleep 1.1  # stat's mtime has 1s resolution; force the next write into a distinguishable second
 reset_capture
 echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
   | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || true
@@ -307,6 +308,7 @@ fi
 
 # 3. Append one assistant turn, stop again → emitted values equal only the delta
 before_mtime=$(file_mtime "$state_file")
+sleep 1.1  # stat's mtime has 1s resolution; force the next write into a distinguishable second
 reset_capture
 cat >> "$skills_session_file" <<'JSONL'
 {"type":"assistant","sessionId":"skills-fresh","timestamp":"2026-03-06T11:00:07.000Z","uuid":"msg-201","message":{"id":"msg-201","role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"Done."}],"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"stop_reason":"end_turn"}}
@@ -559,6 +561,103 @@ if ! jq -e '.telemetry' "$INSTALL_HOME/.gemini/settings.json" &>/dev/null; then
   pass "Gemini: telemetry removed after uninstall"
 else
   fail "Gemini: telemetry still present after uninstall"
+fi
+
+# ========================================================
+echo ""
+echo "Install / Uninstall — preserves other tools' hooks (regression)"
+# ========================================================
+# A plain `. * $hooks` deep-merge in install.sh (and `del(.hooks)` in uninstall.sh) used to
+# replace/wipe whole hook-event arrays, silently dropping any other tool's hooks configured
+# on the same event (real-world incident: this took out rtk + several moshi-hook entries).
+# Pre-populate a settings.json with non-shepherd hooks on the same events shepherd uses, then
+# confirm install.sh adds its own entries alongside them (not instead of them), a second
+# install.sh doesn't duplicate shepherd's own entries, and uninstall.sh removes only
+# shepherd's entries while leaving the others untouched.
+OTHER_HOME=$(mktemp -d)
+trap 'rm -rf "$MOCK_DIR" "$CAPTURE_DIR" "$TEST_HOME" "$INSTALL_HOME" "$OTHER_HOME"' EXIT
+mkdir -p "$OTHER_HOME/.claude"
+cat > "$OTHER_HOME/.claude/settings.json" <<'EOF'
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "moshi-hook claude-hook", "async": true}]}
+    ]
+  },
+  "env": {"SOME_OTHER_VAR": "keep-me"}
+}
+EOF
+
+HOME="$OTHER_HOME" bash "$REPO_ROOT/hooks/install.sh" claude >/dev/null 2>&1
+if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash" and .hooks[0].command == "rtk hook claude")' \
+     "$OTHER_HOME/.claude/settings.json" &>/dev/null; then
+  pass "install.sh preserves another tool's PreToolUse hook (rtk)"
+else
+  fail "install.sh dropped rtk's PreToolUse hook"
+fi
+if jq -e '.hooks.Stop[] | select(.hooks[0].command == "moshi-hook claude-hook")' \
+     "$OTHER_HOME/.claude/settings.json" &>/dev/null; then
+  pass "install.sh preserves another tool's Stop hook (moshi-hook)"
+else
+  fail "install.sh dropped moshi-hook's Stop hook"
+fi
+if jq -e '.env.SOME_OTHER_VAR == "keep-me"' "$OTHER_HOME/.claude/settings.json" &>/dev/null; then
+  pass "install.sh preserves unrelated env vars"
+else
+  fail "install.sh dropped unrelated env vars"
+fi
+shepherd_pretooluse_count=$(jq '[.hooks.PreToolUse[] | select(([.hooks[]?.command // ""] | any(test("/hooks/claude/pre-tool-use\\.sh$"))))] | length' \
+  "$OTHER_HOME/.claude/settings.json")
+if [[ "$shepherd_pretooluse_count" -eq 1 ]]; then
+  pass "install.sh injects exactly one shepherd PreToolUse entry"
+else
+  fail "install.sh PreToolUse entry count" "expected 1, got $shepherd_pretooluse_count"
+fi
+
+# Re-install: shepherd's own entry must not duplicate, other tools' must still be there
+HOME="$OTHER_HOME" bash "$REPO_ROOT/hooks/install.sh" claude >/dev/null 2>&1
+shepherd_pretooluse_count=$(jq '[.hooks.PreToolUse[] | select(([.hooks[]?.command // ""] | any(test("/hooks/claude/pre-tool-use\\.sh$"))))] | length' \
+  "$OTHER_HOME/.claude/settings.json")
+if [[ "$shepherd_pretooluse_count" -eq 1 ]]; then
+  pass "re-running install.sh does not duplicate shepherd's own entry"
+else
+  fail "install.sh re-install duplicate check" "expected 1 shepherd entry, got $shepherd_pretooluse_count"
+fi
+if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash" and .hooks[0].command == "rtk hook claude")' \
+     "$OTHER_HOME/.claude/settings.json" &>/dev/null; then
+  pass "re-running install.sh still preserves rtk's hook"
+else
+  fail "re-install dropped rtk's PreToolUse hook"
+fi
+
+# Uninstall: shepherd's entries go, rtk/moshi-hook/env stay
+HOME="$OTHER_HOME" bash "$REPO_ROOT/hooks/uninstall.sh" claude >/dev/null 2>&1
+if jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash" and .hooks[0].command == "rtk hook claude")' \
+     "$OTHER_HOME/.claude/settings.json" &>/dev/null; then
+  pass "uninstall.sh preserves another tool's PreToolUse hook (rtk)"
+else
+  fail "uninstall.sh dropped rtk's PreToolUse hook"
+fi
+if jq -e '.hooks.Stop[] | select(.hooks[0].command == "moshi-hook claude-hook")' \
+     "$OTHER_HOME/.claude/settings.json" &>/dev/null; then
+  pass "uninstall.sh preserves another tool's Stop hook (moshi-hook)"
+else
+  fail "uninstall.sh dropped moshi-hook's Stop hook"
+fi
+if jq -e '.env.SOME_OTHER_VAR == "keep-me"' "$OTHER_HOME/.claude/settings.json" &>/dev/null; then
+  pass "uninstall.sh preserves unrelated env vars"
+else
+  fail "uninstall.sh dropped unrelated env vars"
+fi
+shepherd_pretooluse_count=$(jq '[.hooks.PreToolUse[]? | select(([.hooks[]?.command // ""] | any(test("/hooks/claude/pre-tool-use\\.sh$"))))] | length' \
+  "$OTHER_HOME/.claude/settings.json")
+if [[ "$shepherd_pretooluse_count" -eq 0 ]]; then
+  pass "uninstall.sh removes shepherd's own PreToolUse entry"
+else
+  fail "uninstall.sh left shepherd's entry behind" "count $shepherd_pretooluse_count"
 fi
 
 # ========================================================

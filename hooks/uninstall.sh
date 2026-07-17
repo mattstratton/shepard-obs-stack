@@ -31,10 +31,26 @@ uninstall_claude() {
     return
   fi
 
-  # Remove hooks + shepherd OTel env vars only, keep user's other env vars
+  # Remove shepherd's own hook entries only (identified by hook script path suffix, same
+  # rule install.sh uses), keeping any other tool's hooks on the same event (rtk, personal
+  # moshi-hook entries, etc.) intact — a plain `del(.hooks)` wipes ALL of them, not just
+  # shepherd's. Drop an event key entirely once it's empty, and drop `.hooks` itself once
+  # every event is empty (matches previous behavior when shepherd was the only hook present).
   local tmp
   tmp=$(mktemp)
-  jq 'del(.hooks) |
+  jq '
+      def is_shepherd($re): ([.hooks[]?.command // ""] | any(test($re)));
+      def strip_event($existing; $re): ([($existing // [])[] | select(is_shepherd($re) | not)]);
+
+      .hooks.PreToolUse = strip_event(.hooks.PreToolUse; "/hooks/claude/pre-tool-use\\.sh$") |
+      .hooks.PostToolUse = strip_event(.hooks.PostToolUse; "/hooks/claude/post-tool-use\\.sh$") |
+      .hooks.SessionStart = strip_event(.hooks.SessionStart; "/hooks/claude/session-start\\.sh$") |
+      .hooks.Stop = strip_event(.hooks.Stop; "/hooks/claude/stop\\.sh$") |
+      (if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end) |
+      (if (.hooks.PostToolUse | length) == 0 then del(.hooks.PostToolUse) else . end) |
+      (if (.hooks.SessionStart | length) == 0 then del(.hooks.SessionStart) else . end) |
+      (if (.hooks.Stop | length) == 0 then del(.hooks.Stop) else . end) |
+      (if (.hooks // {} | length) == 0 then del(.hooks) else . end) |
       del(.env.CLAUDE_CODE_ENABLE_TELEMETRY,
           .env.OTEL_METRICS_EXPORTER,
           .env.OTEL_LOGS_EXPORTER,
@@ -132,9 +148,23 @@ uninstall_gemini() {
     return
   fi
 
+  # Same shepherd-only removal as uninstall_claude — see its comment for why.
   local tmp
   tmp=$(mktemp)
-  jq 'del(.hooks) | del(.telemetry)' "$config_file" > "$tmp" && mv "$tmp" "$config_file"
+  jq '
+      def is_shepherd($re): ([.hooks[]?.command // ""] | any(test($re)));
+      def strip_event($existing; $re): ([($existing // [])[] | select(is_shepherd($re) | not)]);
+
+      .hooks.AfterTool = strip_event(.hooks.AfterTool; "/hooks/gemini/after-tool\\.sh$") |
+      .hooks.AfterAgent = strip_event(.hooks.AfterAgent; "/hooks/gemini/after-agent\\.sh$") |
+      .hooks.AfterModel = strip_event(.hooks.AfterModel; "/hooks/gemini/after-model\\.sh$") |
+      .hooks.SessionEnd = strip_event(.hooks.SessionEnd; "/hooks/gemini/session-end\\.sh$") |
+      (if (.hooks.AfterTool | length) == 0 then del(.hooks.AfterTool) else . end) |
+      (if (.hooks.AfterAgent | length) == 0 then del(.hooks.AfterAgent) else . end) |
+      (if (.hooks.AfterModel | length) == 0 then del(.hooks.AfterModel) else . end) |
+      (if (.hooks.SessionEnd | length) == 0 then del(.hooks.SessionEnd) else . end) |
+      (if (.hooks // {} | length) == 0 then del(.hooks) else . end) |
+      del(.telemetry)' "$config_file" > "$tmp" && mv "$tmp" "$config_file"
 
   green "Gemini CLI   — hooks + native OTel removed from $config_file"
   REMOVED=$((REMOVED + 1))
