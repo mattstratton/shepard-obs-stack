@@ -66,6 +66,17 @@ def subtract_ms($ms):
 # Truncate string to max length
 def trunc($n): if length > $n then .[:$n] + "…" else . end;
 
+# User entry → slash command name (no leading /), or empty
+def slash_cmd:
+  (.message.content
+   | if type == "array" then ([.[] | select(.type == "text") | .text // ""] | join("\n"))
+     elif type == "string" then .
+     else "" end)
+  | if test("<command-name>") then
+      (capture("<command-name>\\s*(?<c>[^<]+?)\\s*</command-name>").c
+       | ltrimstr("/") | split(" ")[0])
+    else empty end;
+
 # ===== Read all pre-filtered entries =====
 [inputs] |
 
@@ -109,6 +120,17 @@ if $session_id == null then empty else
     cache_create: (map(.cache_creation_input_tokens // 0) | add // 0) }
 ) as $tokens |
 ($tokens.input + $tokens.output + $tokens.cache_read + $tokens.cache_create) as $tokens_total |
+
+# Per-model token totals — sidecar `tokens` array
+($assistants
+ | map(select(.message.model != null and .message.model != "<synthetic>"))
+ | group_by(.message.model)
+ | map({model: .[0].message.model,
+        input: (map(.message.usage.input_tokens // 0) | add // 0),
+        output: (map(.message.usage.output_tokens // 0) | add // 0),
+        cacheRead: (map(.message.usage.cache_read_input_tokens // 0) | add // 0),
+        cacheCreation: (map(.message.usage.cache_creation_input_tokens // 0) | add // 0)})
+) as $tokens_by_model |
 
 # --- stop_reason from last assistant with non-null stop_reason ---
 ($assistants | map(select(.message.stop_reason != null) | .message.stop_reason) | last // "unknown") as $stop_reason |
@@ -174,7 +196,11 @@ if $session_id == null then empty else
   {id: .id, name: .name, ts: $m.timestamp, tok: ($m.message.usage.output_tokens // 0),
    file_path: (.input.file_path // .input.notebook_path // ""),
    command: ((.input.command // "")[:200]),
-   pattern: (.input.pattern // .input.query // "")}
+   pattern: (.input.pattern // .input.query // ""),
+   skill: (if .name == "Skill" then (.input.skill // "unknown")
+           elif .name == "SlashCommand" then ((.input.command // "unknown") | ltrimstr("/") | split(" ")[0])
+           else "" end),
+   subagent: (if .name == "Task" or .name == "Agent" then (.input.subagent_type // "unknown") else "" end)}
 ] as $tools |
 
 # Count tool errors
@@ -205,6 +231,75 @@ if $session_id == null then empty else
   ts: .timestamp,
   prompt: ((.data.prompt // "")[:80])
 }] | group_by(.aid) | to_entries) as $agents |
+
+# --- Turn segmentation (hoisted: feeds both per-turn spans below AND skill attribution) ---
+# Turn boundary = user entry with STRING content that is not a compact summary. Known limitation
+# (kept for parity with existing span behavior): real human prompts arriving as array-of-blocks
+# content do not start a new turn under this rule. See docs/fork/README.md gotcha #12.
+(reduce ($all | to_entries[]) as $e (
+  {turns: [], current: null};
+  if $e.value.type == "user" and
+     ($e.value.isCompactSummary | not) and
+     ($e.value.message.content // "" | type == "string") then
+    if .current != null then
+      {turns: (.turns + [.current]),
+       current: {ts: $e.value.timestamp, entries: [$e.value]}}
+    else
+      {turns: .turns,
+       current: {ts: $e.value.timestamp, entries: [$e.value]}}
+    end
+  elif .current != null then
+    .current.entries += [$e.value]
+  else . end
+) | if .current != null then .turns + [.current] else .turns end) as $turns |
+
+# --- Skill/slash-command turn-window attribution ---
+($turns | map(
+  . as $turn |
+  ([$turn.entries[] | select(.type == "assistant")]
+    | group_by(.message.id // .uuid) | [.[] | .[-1]]) as $wa |
+  (([$wa[] | . as $m | (.message.content // [] | if type == "array" then .[] else empty end)
+     | select(.type == "tool_use" and (.name == "Skill" or .name == "SlashCommand"))
+     | {name: (if .name == "Skill" then (.input.skill // "unknown")
+               else ((.input.command // "unknown") | ltrimstr("/") | split(" ")[0]) end),
+        kind: (if .name == "Skill" then "skill" else "slash_command" end),
+        ts: $m.timestamp}]
+   ) + ([$turn.entries[0] | slash_cmd | {name: ., kind: "slash_command", ts: $turn.ts}])
+  ) as $inv |
+  if ($inv | length) == 0 then empty else
+    ([$inv[].ts] | sort | .[0]) as $first_ts |
+    ([$wa[] | select(.timestamp >= $first_ts)]
+      | group_by(.message.model // "unknown")
+      | map({model: (.[0].message.model // "unknown"),
+             input: (map(.message.usage.input_tokens // 0) | add // 0),
+             output: (map(.message.usage.output_tokens // 0) | add // 0),
+             cacheRead: (map(.message.usage.cache_read_input_tokens // 0) | add // 0),
+             cacheCreation: (map(.message.usage.cache_creation_input_tokens // 0) | add // 0)})
+    ) as $wtok |
+    ($inv | length) as $n |
+    $inv | map({name, kind,
+                tokens: ($wtok | map({model,
+                  input: (.input / $n), output: (.output / $n),
+                  cacheRead: (.cacheRead / $n), cacheCreation: (.cacheCreation / $n)}))})
+  end
+) | flatten
+  | group_by("\(.name)|\(.kind)")
+  | map({skill: .[0].name, kind: .[0].kind, count: length,
+         tokens: ([.[].tokens[]] | group_by(.model)
+           | map({model: .[0].model,
+                  input: (map(.input) | add | floor),
+                  output: (map(.output) | add | floor),
+                  cacheRead: (map(.cacheRead) | add | floor),
+                  cacheCreation: (map(.cacheCreation) | add | floor)}))})
+) as $skill_attribution |
+
+# --- Subagent and MCP aggregations ---
+([$tools[] | select(.subagent != "") | .subagent]
+ | group_by(.) | map({subagent_type: .[0], count: length})) as $subagent_counts |
+
+($mcps | map({server: (.data.serverName // "unknown"), tool: (.data.toolName // "unknown")})
+ | group_by("\(.server)|\(.tool)")
+ | map({server: .[0].server, tool: .[0].tool, count: length})) as $mcp_counts |
 
 # ===== Emit spans =====
 
@@ -259,7 +354,9 @@ if $session_id == null then empty else
       "tool.is_error": (if $r.err then "true" else "false" end)} +
      (if $t.file_path != "" then {"tool.input.file_path": $t.file_path} else {} end) +
      (if $t.command != "" then {"tool.input.command": $t.command} else {} end) +
-     (if $t.pattern != "" then {"tool.input.pattern": $t.pattern} else {} end)
+     (if $t.pattern != "" then {"tool.input.pattern": $t.pattern} else {} end) +
+     (if $t.skill != "" then {"skill.name": $t.skill} else {} end) +
+     (if $t.subagent != "" then {"agent.type": $t.subagent} else {} end)
    )}),
 
 # 3. MCP call spans (span_id offset: 10016)
@@ -300,25 +397,6 @@ if $session_id == null then empty else
 # Each turn = human user message → all assistant/tool exchanges until next human message.
 # Uses fixed span name "claude.turn" with turn.index attribute (avoids span-metrics cardinality explosion).
 (if ($ENV.SHEPARD_DETAILED_TRACES // "") == "1" then
-  # Segment entries into turns using reduce
-  (reduce ($all | to_entries[]) as $e (
-    {turns: [], current: null};
-    if $e.value.type == "user" and
-       ($e.value.isCompactSummary | not) and
-       ($e.value.message.content // "" | type == "string") then
-      # New turn boundary
-      if .current != null then
-        {turns: (.turns + [.current]),
-         current: {ts: $e.value.timestamp, entries: [$e.value]}}
-      else
-        {turns: .turns,
-         current: {ts: $e.value.timestamp, entries: [$e.value]}}
-      end
-    elif .current != null then
-      .current.entries += [$e.value]
-    else . end
-  ) | if .current != null then .turns + [.current] else .turns end) as $turns |
-
   ($turns | to_entries[] |
     .key as $tidx | .value as $turn |
     # Dedup assistant entries within this turn
@@ -351,7 +429,21 @@ if $session_id == null then empty else
        "turn.cache_create_tokens": ($tt.cache_create | tostring),
        "turn.tool_count": ($tc | tostring)
      }})
-else empty end)
+else empty end),
+
+{metrics: {
+  session_id: $session_id,
+  git_repo: $git_repo,
+  tokens: $tokens_by_model,
+  skills: $skill_attribution,
+  subagents: $subagent_counts,
+  mcp: $mcp_counts,
+  context: {tool_output_chars: $tool_output_chars,
+            user_prompt_chars: $user_prompt_chars,
+            compact_summary_chars: $compact_summary_chars,
+            compaction_pre_tokens: $compaction_pre_tokens},
+  compaction_count: ($compactions | length)
+}}
 
 end
 '
