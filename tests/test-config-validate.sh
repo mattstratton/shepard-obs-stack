@@ -67,7 +67,7 @@ echo ""
 echo "Prometheus rule validation"
 
 if command -v promtool &>/dev/null; then
-  for f in "$REPO_ROOT"/configs/prometheus/alerts/*.yaml; do
+  for f in "$REPO_ROOT"/configs/prometheus/alerts/*.yaml "$REPO_ROOT"/configs/prometheus/rules/*.yaml; do
     rel="${f#"$REPO_ROOT"/}"
     if promtool check rules "$f" >/dev/null 2>&1; then
       pass "$rel"
@@ -81,6 +81,40 @@ if command -v promtool &>/dev/null; then
   # promtool check config doesn't expand env vars, so skip it — rules are the main value
 else
   echo "  ~ promtool not found — skipped (install prometheus for full validation)"
+fi
+
+# --- Pricing config validation ---
+echo ""
+echo "Pricing config validation"
+
+PRICING_FILE="$REPO_ROOT/configs/pricing/model-prices.json"
+GENERATED_RULES="$REPO_ROOT/configs/prometheus/rules/pricing-generated.yaml"
+
+if jq -e '.prices | type == "array" and length > 0' "$PRICING_FILE" >/dev/null 2>&1; then
+  pass "model-prices.json has a non-empty prices array"
+else
+  fail "model-prices.json prices array" "missing, empty, or not an array"
+fi
+
+bad_entries=$(jq -r '
+  [.prices[] | select(
+    (.model | type != "string") or
+    (.input | type != "number") or
+    (.output | type != "number") or
+    (.cacheRead | type != "number") or
+    (.cacheCreation | type != "number")
+  ) | .model // "unknown"] | length
+' "$PRICING_FILE" 2>/dev/null || echo "error")
+if [[ "$bad_entries" == "0" ]]; then
+  pass "every price entry has 4 numeric rate fields (input/output/cacheRead/cacheCreation)"
+else
+  fail "price entry rate fields" "$bad_entries entries missing/non-numeric rate fields"
+fi
+
+if diff <(bash "$REPO_ROOT/scripts/generate-pricing-rules.sh") "$GENERATED_RULES" >/dev/null 2>&1; then
+  pass "generate-pricing-rules.sh output matches committed pricing-generated.yaml"
+else
+  fail "generator sync" "scripts/generate-pricing-rules.sh output differs from committed pricing-generated.yaml — run with --write and commit"
 fi
 
 # --- Alert expression regression tests ---
