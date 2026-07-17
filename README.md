@@ -58,9 +58,9 @@ This fixes that.
 
 ## Highlights
 
-- **One command** to start: `./scripts/init.sh` — 6 services, 9 dashboards, under a minute
+- **One command** to start: `./scripts/init.sh` — 6 services, 10 dashboards, under a minute
 - **Three CLIs supported**: Claude Code, Codex, Gemini CLI — hooks + native OpenTelemetry
-- **Nine Grafana dashboards** auto-provisioned: cost, tools, operations, quality, per-provider deep dives, session timeline, and side-by-side provider comparison
+- **Ten Grafana dashboards** auto-provisioned: cost, tools, operations, quality, per-provider deep dives, session timeline, side-by-side provider comparison, and per-repo cost/skills breakdown (Claude Code only)
 - **Minimal dependencies** — Docker, plus `bash`, `curl`, and `jq` on the host for hooks and tests. No Python, no Node, no cloud accounts
 - **Optional [Rust accelerator](https://github.com/shepard-system/shepard-hooks-rs)** — drop-in `shepard-hook` binary replaces bash+jq+curl. Hooks auto-detect it; falls back to bash if absent
 - **Seven Claude Code [skills](#claude-code-skills)** — `/obs-status`, `/obs-cost`, `/obs-sessions`, `/obs-tools`, `/obs-alerts`, `/obs-compare`, `/obs-query` — query the stack without leaving your terminal
@@ -111,8 +111,14 @@ Open [localhost:9000](http://localhost:9000) (admin / shepherd). Use your CLI as
 
 Click any Trace ID to open the full waterfall in Grafana Explore → Tempo.
 
+### Projects & Skills (fork-only, Claude Code)
+
+| Dashboard             | What you see                                                                                       |
+|------------------------|-----------------------------------------------------------------------------------------------------|
+| **Projects & Skills** | Per-repo computed cost & tokens, top skills/slash-commands with cost, subagent launches, MCP calls |
+
 Dashboard template variables: **Tools** and **Operations** support `$source` and `$git_repo` filtering.
-**Deep Dive** dashboards use `$model`. **Session Timeline** uses `$provider`. **Comparative** uses `$git_repo`. **Cost** and **Quality** show aggregated data without filters.
+**Deep Dive** dashboards use `$model`. **Session Timeline** uses `$provider`. **Comparative** and **Projects & Skills** use `$git_repo`. **Cost** now also supports `$git_repo`. **Quality** shows aggregated data without filters.
 
 ## How It Works
 
@@ -296,7 +302,7 @@ shepard-obs-stack/
 │   ├── alertmanager/          # routing, Telegram/Slack/Discord receivers
 │   ├── loki/                  # storage + 15 recording rules
 │   ├── tempo/                 # trace storage, 7d retention
-│   └── grafana/               # provisioning + 9 dashboard JSONs
+│   └── grafana/               # provisioning + 10 dashboard JSONs
 └── docs/c4/                   # architecture diagrams
 ```
 

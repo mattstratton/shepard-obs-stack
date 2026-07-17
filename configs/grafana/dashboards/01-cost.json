@@ -23,7 +23,7 @@
     {
       "id": 1,
       "title": "Total Cost",
-      "description": "Claude Code only — other providers don't emit cost metrics",
+      "description": "Computed from configs/pricing/model-prices.json rates. Claude Code only — other providers don't emit cost metrics.",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -42,7 +42,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(max_over_time(shepherd_claude_code_cost_usage_USD_total[$__range]))",
+          "expr": "sum(increase(shepherd:claude:computed_cost_usd{git_repo=~\"$git_repo\"}[$__range]))",
           "queryType": "instant",
           "refId": "A"
         }
@@ -408,7 +408,7 @@
     {
       "id": 7,
       "title": "Cost Over Time",
-      "description": "Claude Code only",
+      "description": "Claude Code only. Computed from configs/pricing/model-prices.json rates.",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -427,7 +427,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (increase(shepherd_claude_code_cost_usage_USD_total{model!=\"\"}[5m]))",
+          "expr": "sum by (model) (increase(shepherd:claude:computed_cost_usd{git_repo=~\"$git_repo\"}[5m]))",
           "legendFormat": "{{model}}",
           "queryType": "range",
           "refId": "A",
@@ -470,7 +470,7 @@
     {
       "id": 8,
       "title": "Cost by Model",
-      "description": "Claude Code only",
+      "description": "Claude Code only. Computed from configs/pricing/model-prices.json rates.",
       "type": "piechart",
       "gridPos": {
         "h": 8,
@@ -489,7 +489,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (max_over_time(shepherd_claude_code_cost_usage_USD_total{model!=\"\"}[$__range])) > 0",
+          "expr": "sum by (model) (increase(shepherd:claude:computed_cost_usd{git_repo=~\"$git_repo\"}[$__range]))",
           "legendFormat": "{{model}}",
           "queryType": "instant",
           "refId": "A"
@@ -1141,10 +1141,283 @@
         "sortOrder": "Descending",
         "dedupStrategy": "none"
       }
+    },
+    {
+      "id": 600,
+      "title": "Cost Analysis",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 41
+      },
+      "panels": []
+    },
+    {
+      "id": 16,
+      "title": "Native Estimate (sanity)",
+      "description": "Claude Code's own client-side estimate at public list prices. Cannot filter by repo. If this drifts >±20% from Total Cost (all repos), check pricing table rates/model IDs.",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 42
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(max_over_time(shepherd_claude_code_cost_usage_USD_total[$__range]))",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "noValue": "–"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 17,
+      "title": "Cache Savings ($)",
+      "description": "What prompt caching saved vs. billing cache reads at the full input rate. Cache rates in the pricing file are standard-multiplier estimates (exact enterprise cache rates unavailable) — treat as directional.",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 42
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(shepherd:claude:cache_savings_usd{git_repo=~\"$git_repo\"}[$__range]))",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "noValue": "–"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 18,
+      "title": "Unpriced Models",
+      "description": "Models emitting tokens with no pricing entry — their cost is silently $0. Fix configs/pricing/model-prices.json.",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 42
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "count(shepherd:claude:unpriced_models) or vector(0)",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "noValue": "–"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 19,
+      "title": "Model Mix Over Time",
+      "description": "Share of total token volume by model — spots premium-model burn on grunt work.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 42
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (model) (increase(shepherd_session_tokens_total{git_repo=~\"$git_repo\"}[$__interval]))",
+          "legendFormat": "{{model}}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "percent",
+              "group": "A"
+            },
+            "lineWidth": 0,
+            "showPoints": "never"
+          },
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "sum"
+          ]
+        }
+      }
     }
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": ".*",
+          "value": ".*"
+        },
+        "name": "git_repo",
+        "label": "Git Repo",
+        "type": "textbox",
+        "query": ".*",
+        "description": "Filter by git repo name (regex). Use .* for all."
+      }
+    ]
   },
   "tags": [
     "cost",

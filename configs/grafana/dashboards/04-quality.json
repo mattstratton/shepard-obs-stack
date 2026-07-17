@@ -286,7 +286,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(max_over_time(shepherd_claude_code_cost_usage_USD_total[$__range])) / (sum(max_over_time(shepherd_claude_code_token_usage_tokens_total{type=\"output\"}[$__range])) / 1000)",
+          "expr": "sum(increase(shepherd:claude:computed_cost_usd[$__range])) / (sum(max_over_time(shepherd_claude_code_token_usage_tokens_total{type=\"output\"}[$__range])) / 1000)",
           "queryType": "instant",
           "refId": "A"
         }
