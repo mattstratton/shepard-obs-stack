@@ -63,6 +63,16 @@ payload_has() {
   [[ -f "$CAPTURE_DIR/curl_payloads.log" ]] && grep -q "$1" "$CAPTURE_DIR/curl_payloads.log" 2>/dev/null
 }
 
+# Poll for an async (detached-subshell) datapoint instead of a fixed sleep.
+wait_for_payload() {
+  local pattern="$1" tries="${2:-40}" i
+  for ((i = 0; i < tries; i++)); do
+    payload_has "$pattern" && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
 # ========================================================
 echo "PreToolUse (Claude) — sensitive file guard"
 # ========================================================
@@ -134,12 +144,16 @@ echo ""
 echo "Stop hook (Claude) — session end + compaction"
 # ========================================================
 
-# Setup temp HOME for session file lookup
+# Setup temp HOME for session file lookup + isolated state dir for the async delta path
 TEST_HOME=$(mktemp -d)
-trap 'rm -rf "$MOCK_DIR" "$CAPTURE_DIR" "$TEST_HOME"' EXIT
+STATE_HOME=$(mktemp -d)
+trap 'rm -rf "$MOCK_DIR" "$CAPTURE_DIR" "$TEST_HOME" "$STATE_HOME"' EXIT
+slug=$(echo "/tmp/test-project" | sed 's|/|-|g')
+mkdir -p "$TEST_HOME/.claude/projects/${slug}/"
 
 # stop_hook_active=true → early exit, no emission
 reset_capture
+export SHEPARD_STATE_DIR="$STATE_HOME/active-true"
 rc=0
 echo '{"session_id":"test","cwd":"/tmp/project","stop_hook_active":true}' \
   | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || rc=$?
@@ -149,37 +163,153 @@ if [[ "$count" -eq 0 ]]; then pass "stop_hook_active → no metrics emitted"; el
 
 # Normal session end → emits events(session_end)
 reset_capture
+export SHEPARD_STATE_DIR="$STATE_HOME/normal"
 rc=0
 echo '{"session_id":"test-sess","cwd":"/tmp/project","stop_hook_active":false}' \
   | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || rc=$?
 if [[ $rc -eq 0 ]]; then pass "normal stop → exit 0"; else fail "normal stop" "got exit $rc"; fi
 if payload_has '"session_end"'; then pass "emits session_end event"; else fail "emits session_end event"; fi
 
-# BUG FIX: zero compactions → no arithmetic error
+# Degenerate session (no assistants/tools/compactions) → async delta path doesn't crash
 reset_capture
-slug=$(echo "/tmp/test-project" | sed 's|/|-|g')
-mkdir -p "$TEST_HOME/.claude/projects/${slug}/"
+export SHEPARD_STATE_DIR="$STATE_HOME/zero-comp"
 echo '{"type":"user","sessionId":"zero-comp"}' > "$TEST_HOME/.claude/projects/${slug}/zero-comp.jsonl"
 rc=0
 echo '{"session_id":"zero-comp","cwd":"/tmp/test-project","stop_hook_active":false}' \
   | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || rc=$?
 if [[ $rc -eq 0 ]]; then
-  pass "zero compactions → no arithmetic error (bug fix)"
+  pass "degenerate session (no data) → exit 0, no crash"
 else
-  fail "zero compactions → arithmetic error!" "got exit $rc"
+  fail "degenerate session → crash!" "got exit $rc"
 fi
 
-# Positive: session with compactions → emits compaction_events
+# Session with compactions → emits compaction_events via the async delta path (first firing,
+# prev={}, so the full compaction_count comes through as the delta)
 reset_capture
+export SHEPARD_STATE_DIR="$STATE_HOME/with-comp"
 echo '{"type":"user","sessionId":"with-comp"}
 {"type":"system","subtype":"compact_boundary"}
 {"type":"system","subtype":"compact_boundary"}' > "$TEST_HOME/.claude/projects/${slug}/with-comp.jsonl"
 echo '{"session_id":"with-comp","cwd":"/tmp/test-project","stop_hook_active":false}' \
   | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || true
-if payload_has '"compaction_events"'; then
+if wait_for_payload '"compaction_events"'; then
   pass "session with compactions → emits compaction_events"
 else
   fail "session with compactions → emits compaction_events"
+fi
+
+# ========================================================
+echo ""
+echo "Stop hook (Claude) — metrics sidecar state & deltas"
+# ========================================================
+# Uses tests/fixtures/claude-session-skills.jsonl (same fixture as the parser tests): turn 1 has
+# a /obs-cost slash command + a superpowers:brainstorming Skill call sharing one token window
+# (model claude-opus-4-8: input 200, output 1000, cacheRead 40000, cacheCreation 600); turn 2 has
+# a Task(code-reviewer) call on model claude-haiku-4-5-20251001 (input 300, output 800, cacheRead
+# 5000, cacheCreation 200); one mcp_progress entry (tiger/db_execute_query).
+
+export SHEPARD_STATE_DIR="$STATE_HOME/skills"
+skills_session_file="$TEST_HOME/.claude/projects/${slug}/skills-fresh.jsonl"
+cp "$REPO_ROOT/tests/fixtures/claude-session-skills.jsonl" "$skills_session_file"
+state_file="$SHEPARD_STATE_DIR/claude/skills-fresh.json"
+
+# 1. Fresh session → full totals + state file created and valid
+reset_capture
+echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
+  | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || true
+if wait_for_payload '"session_tokens"'; then pass "fresh session emits session_tokens"; else fail "fresh session session_tokens" "not seen"; fi
+if [[ -f "$state_file" ]] && jq -e . "$state_file" >/dev/null 2>&1; then
+  pass "state file created and parses as JSON"
+else
+  fail "state file" "missing or invalid: $state_file"
+fi
+if payload_has '"skill_invocations"' && payload_has '"skill_tokens"' && \
+   payload_has '"subagent_invocations"' && payload_has '"mcp_calls"'; then
+  pass "skills fixture emits skill_invocations/skill_tokens/subagent_invocations/mcp_calls"
+else
+  fail "skills fixture metrics" "one or more of skill_invocations/skill_tokens/subagent_invocations/mcp_calls missing"
+fi
+
+# 2. Immediate second stop, unchanged JSONL → no NEW datapoints (session_end + trace excepted)
+reset_capture
+echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
+  | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || true
+sleep 1  # give the async path its normal window; nothing new should show up
+new_metric_count=$(grep -cE 'session_tokens|skill_invocations|skill_tokens|subagent_invocations|mcp_calls|context_chars|compaction_events' "$CAPTURE_DIR/curl_payloads.log" 2>/dev/null || true)
+new_metric_count=${new_metric_count:-0}
+if [[ "$new_metric_count" -eq 0 ]]; then
+  pass "second identical stop emits no new datapoints"
+else
+  fail "second identical stop" "expected 0 new datapoints, got $new_metric_count"
+fi
+
+# 3. Append one assistant turn, stop again → emitted values equal only the delta
+reset_capture
+cat >> "$skills_session_file" <<'JSONL'
+{"type":"assistant","sessionId":"skills-fresh","timestamp":"2026-03-06T11:00:07.000Z","uuid":"msg-201","message":{"id":"msg-201","role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"Done."}],"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"stop_reason":"end_turn"}}
+JSONL
+echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
+  | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || true
+if wait_for_payload '"session_tokens"'; then pass "appended turn emits a new session_tokens delta"; else fail "appended turn delta" "not seen"; fi
+delta_line=$(grep '"session_tokens"' "$CAPTURE_DIR/curl_payloads.log" | grep '"claude-opus-4-8"' | grep '"input"' || true)
+delta_val=$(echo "$delta_line" | jq -r '.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].asDouble' 2>/dev/null)
+if [[ "$delta_val" == "10" ]]; then pass "delta value = 10 (only the new turn's input tokens, not the full total)"; else fail "delta value" "got $delta_val"; fi
+if payload_has '"skill_invocations"' || payload_has '"subagent_invocations"' || payload_has '"mcp_calls"'; then
+  fail "appended turn" "unexpectedly re-emitted skill/subagent/mcp invocations (should be unchanged, delta=0)"
+else
+  pass "appended turn does not re-emit unchanged skill/subagent/mcp invocation counts"
+fi
+
+# 4. Corrupt state file → hook doesn't crash, full totals re-emitted once, state repaired
+reset_capture
+export SHEPARD_STATE_DIR="$STATE_HOME/corrupt"
+mkdir -p "$SHEPARD_STATE_DIR/claude"
+echo "not valid json" > "$SHEPARD_STATE_DIR/claude/skills-fresh.json"
+rc=0
+echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
+  | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || rc=$?
+if [[ $rc -eq 0 ]]; then pass "corrupt state file → exit 0, no crash"; else fail "corrupt state file crash" "got exit $rc"; fi
+if wait_for_payload '"session_tokens"'; then pass "corrupt state file → full totals re-emitted"; else fail "corrupt state file re-emit" "not seen"; fi
+if jq -e . "$SHEPARD_STATE_DIR/claude/skills-fresh.json" >/dev/null 2>&1; then
+  pass "corrupt state file → repaired to valid JSON"
+else
+  fail "corrupt state file repair" "state file still invalid"
+fi
+
+# 5. Pre-existing lock dir → hook skips emission cleanly, state file unchanged, no hang
+reset_capture
+export SHEPARD_STATE_DIR="$STATE_HOME/lock-contend"
+mkdir -p "$SHEPARD_STATE_DIR/claude"
+echo '{"marker":"untouched"}' > "$SHEPARD_STATE_DIR/claude/skills-fresh.json"
+mkdir -p "$SHEPARD_STATE_DIR/claude/skills-fresh.json.lock"
+rc=0
+echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
+  | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || rc=$?
+sleep 1
+if [[ $rc -eq 0 ]]; then pass "pre-existing lock dir → exit 0, no hang"; else fail "lock contention hang/crash" "got exit $rc"; fi
+locked_metric_count=$(grep -cE 'session_tokens|skill_invocations|subagent_invocations|mcp_calls' "$CAPTURE_DIR/curl_payloads.log" 2>/dev/null || true)
+locked_metric_count=${locked_metric_count:-0}
+if [[ "$locked_metric_count" -eq 0 ]]; then pass "pre-existing lock dir → no new datapoints"; else fail "pre-existing lock dir metrics" "expected 0, got $locked_metric_count"; fi
+if [[ "$(cat "$SHEPARD_STATE_DIR/claude/skills-fresh.json")" == '{"marker":"untouched"}' ]]; then
+  pass "pre-existing lock dir → state file unchanged"
+else
+  fail "pre-existing lock dir state" "state file was modified while locked"
+fi
+
+# 6. Old state files (>7 days) cleaned up after a run
+export SHEPARD_STATE_DIR="$STATE_HOME/cleanup"
+mkdir -p "$SHEPARD_STATE_DIR/claude"
+echo '{}' > "$SHEPARD_STATE_DIR/claude/old-session.json"
+old_ts=$(date -v-10d +%Y%m%d%H%M 2>/dev/null || date -d '-10 days' +%Y%m%d%H%M)
+touch -t "$old_ts" "$SHEPARD_STATE_DIR/claude/old-session.json"
+reset_capture
+echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
+  | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || true
+sleep 1.5
+if [[ ! -f "$SHEPARD_STATE_DIR/claude/old-session.json" ]]; then
+  pass "old (>7d) state file cleaned up after a run"
+else
+  fail "old state file cleanup" "old-session.json still present"
 fi
 
 # ========================================================

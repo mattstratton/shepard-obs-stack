@@ -40,54 +40,129 @@ evt_labels=$(jq -n -c --arg s "claude-code" --arg e "session_end" --arg g "$GIT_
   '{source:$s, event_type:$e, git_repo:$g}')
 emit_counter "events" "1" "$evt_labels"
 
-# --- Session log parser → synthetic traces to Tempo ---
+# --- Session log parser → synthetic traces to Tempo + metrics sidecar deltas ---
 # Locate JSONL session file: ~/.claude/projects/{slug}/{session_id}.jsonl
+#
+# The Stop hook fires at the end of EVERY assistant turn, but the parser's metrics sidecar
+# (hooks/lib/session-parser.sh) is CUMULATIVE for the whole session. So we track the previous
+# firing's sidecar per session (state file) and emit only the delta — otherwise every firing
+# would re-add the whole session's totals (upstream double-count bug for compaction/context
+# metrics; fixed here by routing everything through this same delta path).
 if [[ -n "$session_id" && -n "$cwd" ]]; then
   slug=$(echo "$cwd" | sed 's|/|-|g')
   session_file="${HOME}/.claude/projects/${slug}/${session_id}.jsonl"
 
   if [[ -f "$session_file" ]]; then
-    # Emit compaction count if any compaction events occurred
-    compaction_count=$(grep -c '"compact_boundary"' "$session_file" 2>/dev/null || true)
-    if [[ "$compaction_count" -gt 0 ]]; then
-      comp_labels=$(jq -n -c --arg s "claude-code" --arg g "$GIT_REPO" \
-        '{source:$s, git_repo:$g}')
-      emit_counter "compaction_events" "$compaction_count" "$comp_labels"
-    fi
-
-    # Parse session log, emit context metrics + traces — fully detached
+    # Parse session log, emit traces + metric deltas — fully detached
     (
       parser_output=$(bash "${SCRIPT_DIR}/../lib/session-parser.sh" "$session_file")
       [[ -z "$parser_output" ]] && exit 0
 
-      # Extract context breakdown from root span (first line) — single jq call
-      context_data=$(echo "$parser_output" | head -1 | jq -r '[
-        .attributes["context.tool_output_chars"] // "0",
-        .attributes["context.user_prompt_chars"] // "0",
-        .attributes["context.compact_summary_chars"] // "0",
-        .attributes["context.compaction_pre_tokens"] // "0"
-      ] | join("\t")')
-      IFS=$'\t' read -r tool_chars user_chars summary_chars pre_tokens <<< "$context_data"
+      spans=$(echo "$parser_output" | jq -c 'select(.metrics == null)')
+      cur=$(echo "$parser_output" | jq -c '.metrics | select(. != null)')
 
-      # Emit context char metrics (by type) — only if > 0
-      for pair in "tool_output:$tool_chars" "user_prompt:$user_chars" "compact_summary:$summary_chars"; do
-        type="${pair%%:*}"; val="${pair#*:}"
-        if [[ "$val" -gt 0 ]] 2>/dev/null; then
-          labels=$(jq -n -c --arg s "claude-code" --arg t "$type" --arg g "$GIT_REPO" \
-            '{source:$s, type:$t, git_repo:$g}')
-          emit_counter "context_chars" "$val" "$labels"
+      # Emit traces to Tempo first — unchanged semantics
+      echo "$spans" | emit_spans "claude-code-session"
+
+      if [[ -n "$cur" ]]; then
+        STATE_DIR="${SHEPARD_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/shepard-obs}/claude"
+        mkdir -p "$STATE_DIR"
+        state_file="${STATE_DIR}/${session_id}.json"
+
+        if mkdir "${state_file}.lock" 2>/dev/null; then
+          # Atomic, portable lock (no flock on macOS). If another firing holds it, skip
+          # entirely — deltas are computed against the stored cumulative baseline, so a
+          # skipped firing's delta is folded into the next firing's delta automatically.
+          trap 'rmdir "${state_file}.lock" 2>/dev/null' EXIT
+
+          prev=$(cat "$state_file" 2>/dev/null || echo '{}')
+          # Corrupt state file → treat as fresh (full re-emit once), never crash the hook
+          jq -e . >/dev/null 2>&1 <<< "$prev" || prev='{}'
+
+          deltas=$(jq -n -c --argjson cur "$cur" --argjson prev "$prev" --arg git_repo_fallback "$GIT_REPO" '
+            def clamp0: if . < 0 then 0 else . end;
+
+            def token_diff($c; $p):
+              ($c // []) as $ca | ($p // []) as $pa |
+              [$ca[] | . as $cm |
+                (($pa[] | select(.model == $cm.model)) // {input:0,output:0,cacheRead:0,cacheCreation:0}) as $pm |
+                {model: $cm.model,
+                 input: (($cm.input // 0) - ($pm.input // 0) | clamp0),
+                 output: (($cm.output // 0) - ($pm.output // 0) | clamp0),
+                 cacheRead: (($cm.cacheRead // 0) - ($pm.cacheRead // 0) | clamp0),
+                 cacheCreation: (($cm.cacheCreation // 0) - ($pm.cacheCreation // 0) | clamp0)}];
+
+            ($cur.git_repo // "") as $sidecar_repo |
+            (if $sidecar_repo != "" then $sidecar_repo else $git_repo_fallback end) as $git_repo |
+
+            [
+              ( token_diff($cur.tokens; $prev.tokens)[] | . as $td |
+                ["input","output","cacheRead","cacheCreation"][] as $type |
+                {metric:"session_tokens", value: ($td[$type]),
+                 labels:{source:"claude-code", git_repo:$git_repo, model:$td.model, type:$type}}
+                | select(.value > 0)
+              ),
+              ( ($cur.skills // [])[] | . as $cs |
+                ((($prev.skills // [])[] | select(.skill == $cs.skill and .kind == $cs.kind)) // {count:0, tokens: []}) as $ps |
+                (($cs.count // 0) - ($ps.count // 0) | clamp0) as $inv_d |
+                (if $inv_d > 0 then
+                  {metric:"skill_invocations", value:$inv_d,
+                   labels:{source:"claude-code", git_repo:$git_repo, skill_name:$cs.skill, skill_type:$cs.kind}}
+                 else empty end),
+                ( token_diff($cs.tokens; $ps.tokens)[] | . as $td |
+                  ["input","output","cacheRead","cacheCreation"][] as $type |
+                  {metric:"skill_tokens", value: ($td[$type]),
+                   labels:{source:"claude-code", git_repo:$git_repo, skill_name:$cs.skill, skill_type:$cs.kind, model:$td.model, type:$type}}
+                  | select(.value > 0)
+                )
+              ),
+              ( ($cur.subagents // [])[] | . as $cs |
+                ((($prev.subagents // [])[] | select(.subagent_type == $cs.subagent_type)) // {count:0}) as $ps |
+                (($cs.count // 0) - ($ps.count // 0) | clamp0) as $d |
+                select($d > 0) |
+                {metric:"subagent_invocations", value:$d,
+                 labels:{source:"claude-code", git_repo:$git_repo, subagent_type:$cs.subagent_type}}
+              ),
+              ( ($cur.mcp // [])[] | . as $cs |
+                ((($prev.mcp // [])[] | select(.server == $cs.server and .tool == $cs.tool)) // {count:0}) as $ps |
+                (($cs.count // 0) - ($ps.count // 0) | clamp0) as $d |
+                select($d > 0) |
+                {metric:"mcp_calls", value:$d,
+                 labels:{source:"claude-code", git_repo:$git_repo, mcp_server:$cs.server, mcp_tool:$cs.tool}}
+              ),
+              ( ($cur.context // {}) as $cc | ($prev.context // {}) as $pc |
+                (($cc.tool_output_chars // 0) - ($pc.tool_output_chars // 0) | clamp0) as $d_tool |
+                (($cc.user_prompt_chars // 0) - ($pc.user_prompt_chars // 0) | clamp0) as $d_user |
+                (($cc.compact_summary_chars // 0) - ($pc.compact_summary_chars // 0) | clamp0) as $d_summary |
+                (($cc.compaction_pre_tokens // 0) - ($pc.compaction_pre_tokens // 0) | clamp0) as $d_pre |
+                (if $d_tool > 0 then {metric:"context_chars", value:$d_tool, labels:{source:"claude-code", type:"tool_output", git_repo:$git_repo}} else empty end),
+                (if $d_user > 0 then {metric:"context_chars", value:$d_user, labels:{source:"claude-code", type:"user_prompt", git_repo:$git_repo}} else empty end),
+                (if $d_summary > 0 then {metric:"context_chars", value:$d_summary, labels:{source:"claude-code", type:"compact_summary", git_repo:$git_repo}} else empty end),
+                (if $d_pre > 0 then {metric:"context_compaction_pre_tokens", value:$d_pre, labels:{source:"claude-code", git_repo:$git_repo}} else empty end)
+              ),
+              ( (($cur.compaction_count // 0) - ($prev.compaction_count // 0) | clamp0) as $d_comp |
+                (if $d_comp > 0 then {metric:"compaction_events", value:$d_comp, labels:{source:"claude-code", git_repo:$git_repo}} else empty end)
+              )
+            ]
+          ')
+
+          while IFS= read -r d; do
+            [[ -z "$d" ]] && continue
+            m_name=$(jq -r '.metric' <<< "$d")
+            m_val=$(jq -r '.value' <<< "$d")
+            m_labels=$(jq -c '.labels' <<< "$d")
+            emit_counter "$m_name" "$m_val" "$m_labels"
+          done < <(jq -c '.[]' <<< "$deltas")
+
+          # Emit-then-write: a crash between emit and write re-emits one turn's delta (small
+          # over-count). Write-first would permanently lose tokens on any curl failure — silent
+          # under-reporting of spend is the worse failure for a cost tool.
+          tmp=$(mktemp "${STATE_DIR}/.tmp.XXXXXX") && printf '%s' "$cur" > "$tmp" && mv "$tmp" "$state_file"
+
+          # Prune state files older than the stack's 7-day retention
+          find "$STATE_DIR" -type f -mtime +7 -delete 2>/dev/null
         fi
-      done
-
-      # Emit compaction pre-tokens metric
-      if [[ "$pre_tokens" -gt 0 ]] 2>/dev/null; then
-        labels=$(jq -n -c --arg s "claude-code" --arg g "$GIT_REPO" \
-          '{source:$s, git_repo:$g}')
-        emit_counter "context_compaction_pre_tokens" "$pre_tokens" "$labels"
       fi
-
-      # Emit traces to Tempo
-      echo "$parser_output" | emit_spans "claude-code-session"
     ) </dev/null >/dev/null 2>&1 &
     disown
   fi
