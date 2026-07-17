@@ -77,7 +77,7 @@ cd shepard-obs-stack
 ./hooks/install.sh         # injects hooks into your CLI configs
 ```
 
-Open [localhost:3000](http://localhost:3000) (admin / shepherd). Use your CLI as usual — data appears in dashboards within seconds.
+Open [localhost:9000](http://localhost:9000) (admin / shepherd). Use your CLI as usual — data appears in dashboards within seconds.
 
 ```bash
 ./scripts/test-signal.sh   # verify the full pipeline (11 checks)
@@ -133,7 +133,7 @@ AI CLI (Claude Code / Codex / Gemini)
                                            │
 Loki recording rules ──── remote_write ───→ Prometheus
                                            │
-Grafana :3000 ←── PromQL + LogQL ──────────┘
+Grafana :9000 ←── PromQL + LogQL ──────────┘
 ```
 
 **Hooks** provide what native OTel cannot: git repo context and labeled tool/event counters. 
@@ -221,7 +221,7 @@ Native Telegram, Slack, and Discord receivers are included — uncomment and con
 
 | Service        | Port      | Purpose              |
 |----------------|-----------|----------------------|
-| Grafana        | 3000      | Dashboards & explore |
+| Grafana        | 9000      | Dashboards & explore |
 | Prometheus     | 9090      | Metrics & alerts     |
 | Loki           | 3100      | Log aggregation      |
 | Tempo          | 3200      | Distributed tracing  |

@@ -385,7 +385,7 @@ fi
 echo ""
 green "Pipeline is working."
 echo ""
-echo "View in Grafana: http://localhost:3000"
+echo "View in Grafana: http://localhost:9000"
 echo "  Hook metrics:    Prometheus → shepherd_tool_calls_total, shepherd_events_total"
 echo "  Native metrics:  Prometheus → shepherd_claude_code_*, shepherd_gemini_cli_*"
 echo "  Recording rules: Prometheus → shepherd:codex:*:1m"

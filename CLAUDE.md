@@ -8,6 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Hybrid telemetry: bash hooks emit OTLP metrics (git context + tool/event counters); native OTel export provides logs, traces, and richer provider-specific metrics. 
 All data flows through OTel Collector into Prometheus, Loki, and Tempo; 9 Grafana dashboards auto-provision on startup.
 
+**Fork note:** this is Matt's personal fork. Planned divergences from upstream (per-repo cost
+attribution, computed cost from a real pricing table, skill/subagent/MCP analytics) are specced
+in `docs/fork/` — read `docs/fork/README.md` before implementing any of them. Grafana is on
+host port **9000** in this fork.
+
 ## Quick Start
 
 ```bash
@@ -16,7 +21,7 @@ All data flows through OTel Collector into Prometheus, Loki, and Tempo; 9 Grafan
 ./scripts/test-signal.sh        # verify pipeline (11 checks)
 ```
 
-Open http://localhost:3000 (admin / shepherd).
+Open http://localhost:9000 (admin / shepherd).
 
 ## Common Commands
 
@@ -30,7 +35,7 @@ docker compose logs -f loki --tail=50         # tail service logs
 
 # Verify services
 curl -s http://localhost:3100/ready           # Loki health
-curl -s http://localhost:3000/api/health      # Grafana health
+curl -s http://localhost:9000/api/health      # Grafana health
 curl -s http://localhost:9090/-/healthy       # Prometheus health
 
 # Hook management
@@ -57,7 +62,7 @@ curl -s 'http://localhost:3100/loki/api/v1/query_range' \
 
 | Port | Service        | Description          |
 |------|----------------|----------------------|
-| 3000 | Grafana        | Dashboards & explore |
+| 9000 | Grafana        | Dashboards & explore (fork: host 9000 → container 3000) |
 | 3100 | Loki           | Log aggregation      |
 | 9090 | Prometheus     | Metrics & alerts     |
 | 9093 | Alertmanager   | Alert routing        |

@@ -262,7 +262,7 @@ PROVIDERS=("$@")
 ALL_PROVIDERS=(claude codex gemini)
 
 # Validate arguments
-for p in "${PROVIDERS[@]}"; do
+for p in ${PROVIDERS[@]+"${PROVIDERS[@]}"}; do
   case "$p" in
     claude|codex|gemini) ;;
     -h|--help)

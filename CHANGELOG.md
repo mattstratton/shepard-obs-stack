@@ -4,7 +4,31 @@ All notable changes to shepard-obs-stack ("The Eye") are documented here.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Fork roadmap** (`docs/fork/`): handoff specs for per-repo token/cost attribution, computed
+  cost from a real pricing table, skill/subagent/MCP analytics, spend alerts, and cutover.
+  Implementation lands in later phases; see `docs/fork/README.md` for phasing.
+
+### Changed
+
+- **Grafana host port 3000 → 9000** (`docker-compose.yaml`); all docs/scripts/skills updated.
+  Container port unchanged.
+
+### Fixed
+
+- **install.sh / uninstall.sh on macOS system bash 3.2**: empty `PROVIDERS` array expansion
+  under `set -u` aborted with "unbound variable" when run with no arguments (also silently
+  killed the test-hooks Install/Uninstall section locally; CI's bash 5 was unaffected).
+  Now uses the bash-3.2-safe `${arr[@]+"${arr[@]}"}` expansion.
+
+### Known issue (fix specced, not yet applied)
+
+- The Claude Stop hook fires per assistant turn and re-emits full-session totals, inflating
+  `shepherd_context_chars_total`, `shepherd_context_compaction_pre_tokens_total`, and
+  `shepherd_compaction_events_total` by roughly ×(turn count). The delta-emission fix is
+  specced in `docs/fork/02-state-and-deltas.md`; once applied, these metrics' magnitudes will
+  drop — that is the fix, not a regression.
 
 ## [1.3.1] — 2026-03-23
 

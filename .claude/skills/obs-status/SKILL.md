@@ -48,7 +48,7 @@ scripts/obs-api.sh prom '/api/v1/query?query=max(shepherd_claude_code_cost_usage
 | Column | Source |
 |--------|--------|
 | Service | service name |
-| Port | 3000, 3100, 9090, 9093, 3200, 4317/4318 |
+| Port | 9000, 3100, 9090, 9093, 3200, 4317/4318 |
 | Status | UP if healthy response, DOWN if empty/error |
 
 For output format options (table/csv/json), read `.claude/skills/obs-shared/assets/output-formats.md`.

@@ -94,4 +94,4 @@ For output format options (table/csv/json), read `.claude/skills/obs-shared/asse
 5. Highlight notable differences: "Claude has 3× more tool calls than Gemini"
 6. Note: cost metrics available for Claude only. Codex tokens may be 0 (known limitation).
 7. If all values are 0: "No activity in the last 24h. Try `/obs-status` to check stack health."
-8. Dashboard link: http://localhost:3000/d/shepherd-comparative
+8. Dashboard link: http://localhost:9000/d/shepherd-comparative

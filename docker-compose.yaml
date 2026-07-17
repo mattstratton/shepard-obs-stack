@@ -109,7 +109,7 @@ services:
       - ./configs/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:9000:3000"
     deploy:
       resources:
         limits:
