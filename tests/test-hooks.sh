@@ -65,7 +65,7 @@ payload_has() {
 
 # Poll for an async (detached-subshell) datapoint instead of a fixed sleep.
 wait_for_payload() {
-  local pattern="$1" tries="${2:-40}" i
+  local pattern="$1" tries="${2:-60}" i
   for ((i = 0; i < tries; i++)); do
     payload_has "$pattern" && return 0
     sleep 0.25

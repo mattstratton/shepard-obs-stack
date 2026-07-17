@@ -293,8 +293,8 @@ shepard-obs-stack/
 │   ├── run-all.sh             # test orchestrator (--e2e for Docker smoke)
 │   ├── test-shell-syntax.sh   # bash -n + shellcheck
 │   ├── test-config-validate.sh # JSON + YAML validation
-│   ├── test-hooks.sh          # behavioral tests (41 tests)
-│   ├── test-parsers.sh        # session parser tests (37 tests)
+│   ├── test-hooks.sh          # behavioral tests (55 tests)
+│   ├── test-parsers.sh        # session parser tests (58 tests)
 │   └── fixtures/              # minimal session logs (Claude, Codex, Gemini)
 ├── configs/
 │   ├── otel-collector/        # receivers → processors → exporters
@@ -308,7 +308,7 @@ shepard-obs-stack/
 
 ## Testing
 
-128 automated tests across 4 suites, plus a Docker-based E2E smoke test:
+159 automated tests across 4 suites, plus a Docker-based E2E smoke test:
 
 ```bash
 bash tests/run-all.sh         # unit tests: syntax, configs, hooks, parsers
@@ -317,10 +317,10 @@ bash tests/run-all.sh --e2e   # + Docker E2E (starts stack, runs test-signal.sh)
 
 | Suite | Tests | What it checks |
 |-------|-------|----------------|
-| Shell Syntax | 24 | `bash -n` on all scripts, shellcheck (if installed) |
-| Config Validation | 26 | JSON dashboards (jq) + YAML configs (PyYAML) + promtool rules + alert regression |
-| Hook Behavior | 41 | PreToolUse guard, PostToolUse metrics, Stop compaction, all Gemini hooks, Codex, install/uninstall |
-| Session Parsers | 37 | Span count, required fields, attributes, error status, trace_id consistency, context breakdown, per-turn spans |
+| Shell Syntax | 25 | `bash -n` on all scripts, shellcheck (if installed) |
+| Config Validation | 21 | JSON dashboards + pricing table (jq) + YAML configs (PyYAML) + promtool rules + pricing generator sync + alert regression |
+| Hook Behavior | 55 | PreToolUse guard, PostToolUse metrics, Stop compaction, Stop metrics sidecar state/delta path, all Gemini hooks, Codex, install/uninstall |
+| Session Parsers | 58 | Span count, required fields, attributes, error status, trace_id consistency, context breakdown, per-turn spans, metrics sidecar (tokens, skills, subagents, MCP) |
 
 CI runs automatically on push/PR via [GitHub Actions](.github/workflows/test.yml).
 
