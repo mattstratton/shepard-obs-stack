@@ -16,13 +16,13 @@ groups:
           description: "Tool error rate is above 10%. Current: {{ $value | humanizePercentage }}"
 
       - alert: HighSessionCost
-        expr: increase(shepherd_claude_code_cost_usage_USD_total[1h]) > 10
-        for: 0m
+        expr: sum(increase(shepherd:claude:computed_cost_usd[1h])) > 10
+        for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High cost in the last hour"
-          description: "Claude Code cost exceeded $10 in the last hour. Current: ${{ $value | printf \"%.2f\" }}. Check active sessions."
+          summary: "AI coding cost exceeded $10 in the last hour"
+          description: "Computed cost (pricing table × tokens) is {{ $value | printf \"%.2f\" }} USD over 1h."
 
       - alert: HighTokenBurn
         expr: rate(shepherd_claude_code_token_usage_tokens_total[5m]) * 60 > 50000
@@ -53,3 +53,30 @@ groups:
         annotations:
           summary: "No telemetry received on {{ $labels.receiver }}"
           description: "No spans or metrics received on receiver {{ $labels.receiver }} for 10 minutes."
+
+      - alert: DailySpendHigh
+        expr: sum(increase(shepherd:claude:computed_cost_usd[24h])) > 50
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "AI coding spend exceeded $50 in 24h"
+          description: "24h computed spend: ${{ $value | printf \"%.2f\" }}."
+
+      - alert: WeeklySpendHigh
+        expr: sum(increase(shepherd:claude:computed_cost_usd[7d])) > 200
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "AI coding spend exceeded $200 in 7d"
+          description: "7d computed spend: ${{ $value | printf \"%.2f\" }}. Note: 7d equals Prometheus retention — this window works, but barely; treat as approximate."
+
+      - alert: UnpricedModelSeen
+        expr: count(shepherd:claude:unpriced_models) > 0
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "Model(s) emitting tokens with no pricing entry"
+          description: "Cost for {{ $value }} model(s) is silently $0. Add entries to configs/pricing/model-prices.json and regenerate rules."

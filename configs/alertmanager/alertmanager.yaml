@@ -88,11 +88,11 @@ inhibit_rules:
   - source_match:
       alertname: 'ShepherdServicesDown'
     target_match_re:
-      alertname: 'NoTelemetryReceived|HighToolErrorRate|HighSessionCost'
+      alertname: 'NoTelemetryReceived|HighToolErrorRate|HighSessionCost|DailySpendHigh|WeeklySpendHigh|UnpricedModelSeen'
     equal: ['cluster']
 
   - source_match:
       alertname: 'OTelCollectorDown'
     target_match_re:
-      alertname: 'ShepherdServicesDown|NoTelemetryReceived|HighToolErrorRate|HighSessionCost|HighTokenBurn'
+      alertname: 'ShepherdServicesDown|NoTelemetryReceived|HighToolErrorRate|HighSessionCost|HighTokenBurn|DailySpendHigh|WeeklySpendHigh|UnpricedModelSeen'
     equal: ['cluster']

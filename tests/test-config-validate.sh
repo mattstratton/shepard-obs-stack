@@ -151,12 +151,13 @@ ALERTS_DIR="$REPO_ROOT/configs/prometheus/alerts"
 # Rule counts per file
 assert_alert_count "$ALERTS_DIR/infra.yaml" 6
 assert_alert_count "$ALERTS_DIR/pipeline.yaml" 5
-assert_alert_count "$ALERTS_DIR/services.yaml" 5
+assert_alert_count "$ALERTS_DIR/services.yaml" 8
 
 # Key expressions that must not drift
 assert_alert_expr "$ALERTS_DIR/pipeline.yaml" "LokiDown" 'job="loki"'
 assert_alert_expr "$ALERTS_DIR/pipeline.yaml" "ShepherdServicesDown" 'job="shepherd-services"'
 assert_alert_expr "$ALERTS_DIR/infra.yaml" "OTelCollectorDown" 'job="otel-collector"'
+assert_alert_expr "$ALERTS_DIR/services.yaml" "HighSessionCost" 'computed_cost_usd'
 
 echo ""
 echo "Config validation: $PASS passed, $FAIL failed"
