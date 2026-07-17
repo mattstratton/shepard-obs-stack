@@ -41,7 +41,13 @@ evt_labels=$(jq -n -c --arg s "claude-code" --arg e "session_end" --arg g "$GIT_
 emit_counter "events" "1" "$evt_labels"
 
 # --- Session log parser → synthetic traces to Tempo + metrics sidecar deltas ---
-# Locate JSONL session file: ~/.claude/projects/{slug}/{session_id}.jsonl
+# Locate JSONL session file by session_id (a UUID, so this is exact) rather than
+# reconstructing the project-slug directory from $cwd: Claude Code's directory-to-slug
+# convention (replace special characters with "-") has varied across versions/paths — some
+# sessions on this machine keep dots from a path segment (e.g. "github.com"), others convert
+# them to dashes — so a hand-rolled sed can silently compute the wrong path and never find a
+# real, existing session file. -print -quit stops at the first match; the projects tree is
+# shallow (~/.claude/projects/<slug>/<session_id>.jsonl) so this is cheap.
 #
 # The Stop hook fires at the end of EVERY assistant turn, but the parser's metrics sidecar
 # (hooks/lib/session-parser.sh) is CUMULATIVE for the whole session. So we track the previous
@@ -49,10 +55,9 @@ emit_counter "events" "1" "$evt_labels"
 # would re-add the whole session's totals (upstream double-count bug for compaction/context
 # metrics; fixed here by routing everything through this same delta path).
 if [[ -n "$session_id" && -n "$cwd" ]]; then
-  slug=$(echo "$cwd" | sed 's|/|-|g')
-  session_file="${HOME}/.claude/projects/${slug}/${session_id}.jsonl"
+  session_file=$(find "${HOME}/.claude/projects" -maxdepth 2 -name "${session_id}.jsonl" -print -quit 2>/dev/null)
 
-  if [[ -f "$session_file" ]]; then
+  if [[ -n "$session_file" && -f "$session_file" ]]; then
     # Parse session log, emit traces + metric deltas — fully detached
     (
       parser_output=$(bash "${SCRIPT_DIR}/../lib/session-parser.sh" "$session_file")

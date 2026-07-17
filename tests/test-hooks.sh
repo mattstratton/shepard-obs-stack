@@ -73,6 +73,38 @@ wait_for_payload() {
   return 1
 }
 
+# Poll until a state file exists and parses as JSON. This is the LAST thing the Stop hook's
+# async delta path does (after emitting metrics), so it's a more reliable "async work is fully
+# done" signal than waiting for the first metric payload to appear — under load, metric
+# emission (a curl call) can be observed while the rest of the emit loop + state write are
+# still in flight, which used to race with immediate follow-up assertions.
+wait_for_state_file() {
+  local file="$1" tries="${2:-60}" i
+  for ((i = 0; i < tries; i++)); do
+    [[ -f "$file" ]] && jq -e . "$file" >/dev/null 2>&1 && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+# Poll until a file's mtime changes from a captured baseline — used to confirm a state file
+# was rewritten (even when its content is unchanged, e.g. a zero-delta re-firing still
+# rewrites the file every successful lock acquisition).
+file_mtime() {
+  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+}
+wait_for_mtime_change() {
+  local file="$1" before="$2" tries="${3:-60}" i cur
+  for ((i = 0; i < tries; i++)); do
+    if [[ -f "$file" ]]; then
+      cur=$(file_mtime "$file")
+      [[ -n "$cur" && "$cur" != "$before" ]] && return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
 # ========================================================
 echo "PreToolUse (Claude) — sensitive file guard"
 # ========================================================
@@ -198,6 +230,31 @@ else
   fail "session with compactions → emits compaction_events"
 fi
 
+# Regression: session file lookup must not depend on reconstructing the project-slug from
+# $cwd. Real Claude Code project directories replace BOTH "/" and "." with "-" (e.g. a path
+# segment like "github.com" becomes "github-com"), but a naive `sed 's|/|-|g'` only converts
+# slashes — so for any cwd containing a dot, the old slug-reconstruction approach computed a
+# directory that never matched the real one, and silently never found the session file at
+# all (this was a real, long-standing bug: it affected this repo's own dev directory, whose
+# path includes "src/github.com/..."). Simulate that exact mismatch here: place the fixture
+# under the dot-converted (real) slug while cwd still contains the literal dot.
+reset_capture
+export SHEPARD_STATE_DIR="$STATE_HOME/dot-lookup"
+dotted_cwd="/tmp/test.dotted.project"
+real_slug="-tmp-test-dotted-project"   # what Claude Code actually creates (dot -> dash)
+mkdir -p "$TEST_HOME/.claude/projects/${real_slug}/"
+cat > "$TEST_HOME/.claude/projects/${real_slug}/dot-lookup-test.jsonl" <<'JSONL'
+{"type":"user","sessionId":"dot-lookup-test","timestamp":"2026-03-06T12:00:00.000Z","message":{"role":"user","content":"hello"}}
+{"type":"assistant","sessionId":"dot-lookup-test","timestamp":"2026-03-06T12:00:01.000Z","uuid":"msg-301","message":{"id":"msg-301","role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":5,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"stop_reason":"end_turn"}}
+JSONL
+echo "{\"session_id\":\"dot-lookup-test\",\"cwd\":\"$dotted_cwd\",\"stop_hook_active\":false}" \
+  | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || true
+if wait_for_payload '"session_tokens"'; then
+  pass "session file found by session_id even when cwd contains a dot (slug-mismatch regression)"
+else
+  fail "dot-in-cwd session lookup" "session_tokens never emitted — session file lookup regressed"
+fi
+
 # ========================================================
 echo ""
 echo "Stop hook (Claude) — metrics sidecar state & deltas"
@@ -217,12 +274,14 @@ state_file="$SHEPARD_STATE_DIR/claude/skills-fresh.json"
 reset_capture
 echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
   | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || true
-if wait_for_payload '"session_tokens"'; then pass "fresh session emits session_tokens"; else fail "fresh session session_tokens" "not seen"; fi
-if [[ -f "$state_file" ]] && jq -e . "$state_file" >/dev/null 2>&1; then
+# Wait for the state file, not just the first metric: it's written last in the async
+# pipeline, so its presence proves emission has already finished too (no race).
+if wait_for_state_file "$state_file"; then
   pass "state file created and parses as JSON"
 else
   fail "state file" "missing or invalid: $state_file"
 fi
+if payload_has '"session_tokens"'; then pass "fresh session emits session_tokens"; else fail "fresh session session_tokens" "not seen"; fi
 if payload_has '"skill_invocations"' && payload_has '"skill_tokens"' && \
    payload_has '"subagent_invocations"' && payload_has '"mcp_calls"'; then
   pass "skills fixture emits skill_invocations/skill_tokens/subagent_invocations/mcp_calls"
@@ -231,10 +290,13 @@ else
 fi
 
 # 2. Immediate second stop, unchanged JSONL → no NEW datapoints (session_end + trace excepted)
+before_mtime=$(file_mtime "$state_file")
 reset_capture
 echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
   | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || true
-sleep 1  # give the async path its normal window; nothing new should show up
+# The state file is rewritten every successful firing (even with an all-zero delta), so
+# waiting for its mtime to change is a reliable "this firing is fully done" signal.
+wait_for_mtime_change "$state_file" "$before_mtime" || true
 new_metric_count=$(grep -cE 'session_tokens|skill_invocations|skill_tokens|subagent_invocations|mcp_calls|context_chars|compaction_events' "$CAPTURE_DIR/curl_payloads.log" 2>/dev/null || true)
 new_metric_count=${new_metric_count:-0}
 if [[ "$new_metric_count" -eq 0 ]]; then
@@ -244,13 +306,14 @@ else
 fi
 
 # 3. Append one assistant turn, stop again → emitted values equal only the delta
+before_mtime=$(file_mtime "$state_file")
 reset_capture
 cat >> "$skills_session_file" <<'JSONL'
 {"type":"assistant","sessionId":"skills-fresh","timestamp":"2026-03-06T11:00:07.000Z","uuid":"msg-201","message":{"id":"msg-201","role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"Done."}],"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"stop_reason":"end_turn"}}
 JSONL
 echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
   | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || true
-if wait_for_payload '"session_tokens"'; then pass "appended turn emits a new session_tokens delta"; else fail "appended turn delta" "not seen"; fi
+if wait_for_mtime_change "$state_file" "$before_mtime"; then pass "appended turn emits a new session_tokens delta"; else fail "appended turn delta" "not seen"; fi
 delta_line=$(grep '"session_tokens"' "$CAPTURE_DIR/curl_payloads.log" | grep '"claude-opus-4-8"' | grep '"input"' || true)
 delta_val=$(echo "$delta_line" | jq -r '.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.dataPoints[0].asDouble' 2>/dev/null)
 if [[ "$delta_val" == "10" ]]; then pass "delta value = 10 (only the new turn's input tokens, not the full total)"; else fail "delta value" "got $delta_val"; fi
@@ -269,14 +332,18 @@ rc=0
 echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
   | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || rc=$?
 if [[ $rc -eq 0 ]]; then pass "corrupt state file → exit 0, no crash"; else fail "corrupt state file crash" "got exit $rc"; fi
-if wait_for_payload '"session_tokens"'; then pass "corrupt state file → full totals re-emitted"; else fail "corrupt state file re-emit" "not seen"; fi
-if jq -e . "$SHEPARD_STATE_DIR/claude/skills-fresh.json" >/dev/null 2>&1; then
+# wait_for_state_file requires valid JSON, so it also proves the repair happened.
+if wait_for_state_file "$SHEPARD_STATE_DIR/claude/skills-fresh.json"; then
   pass "corrupt state file → repaired to valid JSON"
 else
   fail "corrupt state file repair" "state file still invalid"
 fi
+if payload_has '"session_tokens"'; then pass "corrupt state file → full totals re-emitted"; else fail "corrupt state file re-emit" "not seen"; fi
 
 # 5. Pre-existing lock dir → hook skips emission cleanly, state file unchanged, no hang
+# (No async work happens here at all — mkdir on the lock fails immediately and the hook
+# bails out before touching the parser/state, so this path is fast regardless of system
+# load; a short fixed wait is fine, unlike the full-pipeline cases above.)
 reset_capture
 export SHEPARD_STATE_DIR="$STATE_HOME/lock-contend"
 mkdir -p "$SHEPARD_STATE_DIR/claude"
@@ -285,7 +352,7 @@ mkdir -p "$SHEPARD_STATE_DIR/claude/skills-fresh.json.lock"
 rc=0
 echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
   | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || rc=$?
-sleep 1
+sleep 2
 if [[ $rc -eq 0 ]]; then pass "pre-existing lock dir → exit 0, no hang"; else fail "lock contention hang/crash" "got exit $rc"; fi
 locked_metric_count=$(grep -cE 'session_tokens|skill_invocations|subagent_invocations|mcp_calls' "$CAPTURE_DIR/curl_payloads.log" 2>/dev/null || true)
 locked_metric_count=${locked_metric_count:-0}
@@ -305,7 +372,9 @@ touch -t "$old_ts" "$SHEPARD_STATE_DIR/claude/old-session.json"
 reset_capture
 echo '{"session_id":"skills-fresh","cwd":"/tmp/test-project","stop_hook_active":false}' \
   | HOME="$TEST_HOME" run_hook hooks/claude/stop.sh || true
-sleep 1.5
+# Cleanup runs right after the state write, so waiting for THIS session's state file is the
+# right completion signal before checking that the unrelated old file got pruned.
+wait_for_state_file "$SHEPARD_STATE_DIR/claude/skills-fresh.json" || true
 if [[ ! -f "$SHEPARD_STATE_DIR/claude/old-session.json" ]]; then
   pass "old (>7d) state file cleaned up after a run"
 else
